@@ -2,7 +2,9 @@
 title: "Qualitative Exercise Prediction"
 author: "skewdlogix"
 date: "July 8, 2017"
-output: html_document
+output: 
+  html_document: 
+    keep_md: yes
 ---
 
 ```{r setup, include=FALSE}
@@ -186,43 +188,76 @@ stopCluster(cl)
 
 ### Model Evaluation and Comparison
 
-First evaluate on train sub-dataset.
+First evaluate on train sub-dataset. we will use Accuracy and Out-of-sample error to evaluate the respective models.
+
 ```{r}
 pred_rf <- predict(model_rf, classeTrainMod)
 cm_tr1 <- confusionMatrix(pred_rf, classeTrain[, "classe"])
+Accuracy <- cm_tr1$overall[[1]]
+OutOfSampleError <- 1-cm_tr1$overall[[1]]
+tr1 <- rbind(Accuracy, OutOfSampleError)
+colnames(tr1) <- "Result"
 cm_tr1
+tr1
 
 pred_gbm <- predict(model_gbm, classeTrainMod)
 cm_tr2 <- confusionMatrix(pred_gbm, classeTrain[, "classe"])
+Accuracy <- cm_tr2$overall[[1]]
+OutOfSampleError <- 1-cm_tr2$overall[[1]]
+tr2 <- rbind(Accuracy, OutOfSampleError)
+colnames(tr2) <- "Result"
 cm_tr2
+tr2
 
 pred_svm <- predict(model_svm, classeTrainMod)
 cm_tr3 <- confusionMatrix(pred_svm, classeTrain[, "classe"])
+Accuracy <- cm_tr3$overall[[1]]
+OutOfSampleError <- 1-cm_tr3$overall[[1]]
+tr3 <- rbind(Accuracy, OutOfSampleError)
+colnames(tr3) <- "Result"
 cm_tr3
+tr3
 ```
 
 NeXt evaluate on cross-validation sub-dataset.
 ```{r}
 pred_rf <- predict(model_rf, classeCvMod)
 cm_cv1 <- confusionMatrix(pred_rf, classeCv[, "classe"])
+Accuracy <- cm_cv1$overall[[1]]
+OutOfSampleError <- 1-cm_cv1$overall[[1]]
+cv1 <- rbind(Accuracy, OutOfSampleError)
+colnames(cv1) <- "Result"
 cm_cv1
+cv1
 
 pred_gbm <- predict(model_gbm, classeCvMod)
 cm_cv2 <- confusionMatrix(pred_gbm, classeCv[, "classe"])
+Accuracy <- cm_cv2$overall[[1]]
+OutOfSampleError <- 1-cm_cv2$overall[[1]]
+cv2 <- rbind(Accuracy, OutOfSampleError)
+colnames(cv2) <- "Result"
 cm_cv2
+cv2
 
 pred_svm <- predict(model_svm, classeCvMod)
 cm_cv3 <- confusionMatrix(pred_svm, classeCv[, "classe"])
+Accuracy <- cm_cv3$overall[[1]]
+OutOfSampleError <- 1-cm_cv3$overall[[1]]
+cv3 <- rbind(Accuracy, OutOfSampleError)
+colnames(cv3) <- "Result"
 cm_cv3
+cv3
 ```
 
 ### Final Model
 
-THe superior model was the Random Forest ("rf") model with a training accuracy of 1, a sensitivity level of 1 and a specificity level of 1. The cross-validation dataset accuracy was very close at 0.9973, a sensitivity level between 0.9955 and 0.9991 for all classes, and a specificity level between 0.9989 and 0.9998 for all classes.
+THe superior model was the Random Forest ("rf") model with a training accuracy of 1, an out-of-sample error of 0, a sensitivity level of 1, and a specificity level of 1.  
+The cross-validation dataset accuracy was very close at 0.9973, an out-of-sample error of 0.0027, a sensitivity level between 0.9955 and 0.9991 for all classes, and a specificity level between 0.9989 and 0.9998 for all classes.
 
 ```{r}
 varImp(model_rf)
 model_rf$finalModel
+cv1
 save(model_rf, file="HAR_WLE_model_rf.RData")
 ```
 
@@ -235,6 +270,7 @@ par(oma=c(4,2,4,2))
 heatmap.2( x, Rowv=FALSE, Colv=FALSE, dendrogram='none', cellnote=x, notecol="black", trace='none', key=FALSE,lwid = c(.01,.99), lhei = c(.01,.99), margins = c(5,5), xlab= "Reference", ylab= "Prediction")
 ```
 
+The Out-of-Sample Error rate is only 0.27%.
 The OOB estimate of error rate is only 0.26%.
 
 ### Model Prediction on Test Dataset
