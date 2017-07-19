@@ -1,0 +1,273 @@
+---
+title: "Qualitative Exercise Prediction"
+author: "skewdlogix"
+date: "July 8, 2017"
+output: 
+  html_document: 
+    keep_md: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Executive Summary
+
+The study looked at weight lifting exercise data from accelerometers with the goal of predicting the manner in which the exercise was conducted. The available dataset from the *Human Activity Recognition* project provided information on how each exercise was performed and the related five outcomes. Three models - Random Forests, Generalized Boosted Models, and Support Vector Machines - were trained on the dataset using cross-validation and repeated sampling and the outcomes were evaluated on a cross-validation dataset. The Random Forests model achieved the highest Accuracy of 0.9973 and a Kappa value of 0.9965 as well as the lowest OOB estimate of the error rate at 0.26%. This model was then used to predict the outcomes on a test dataset.
+
+### Introduction
+
+Using devices such as *Jawbone Up, Nike FuelBand,* and *Fitbit* it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, the goal is to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. 
+
+The various outcomes are: 
+
+*Class A* - performing the exercise exactly according to the specication;
+*Class B* - throwing the elbows to the front;
+*Class C* - lifting the dumbbell only halfway;
+*Class D* - lowering the dumbbell only halfway;
+*Class E* - throwing the hips to the front.
+
+### Initial Workspace Preparation
+
+Remove any old files and clean up workspace
+
+```{r}
+rm(list=ls(all=TRUE))
+```
+
+Call appropriate libraries for functions
+
+```{r,message=FALSE,warning=FALSE}
+library(caret)
+library(e1071)
+library(kernlab)
+library(doParallel)
+library(reshape2)
+library(gplots)
+library(ggplot2)
+```
+
+Get working directory and assign it to wd
+
+```{r}
+wd <- getwd()
+```
+
+### Data Acquisition
+
+The data for this assignment come in the form of a comma-separated-value file downloaded from the *Human Activity Recognition* project at http://groupware.les.inf.puc-rio.br/har. The Weight Lifting Exercise (WLE) dataset was compiled during research for the paper, *Velloso, E. et al, "Qualitative Activity Recognition of Weight Lifting Exercises", Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013*.
+
+First we assign the URL for each file location of the training and testing datasets to the respective variables called TrainFileUrl and TestFileUrl. Then the files are downloaded using the assigned parameters.
+
+```{r,message=FALSE,eval=FALSE}
+TrainFileUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+
+TestFileUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+download.file(TrainFileUrl, file.path(wd, "pml-training.csv"))
+download.file(TestFileUrl, file.path(wd, "pml-testing.csv"))
+```
+
+Once the files are downloaded to the working directory, they are read into RDS files to prepare them for data analysis. The resulting files are examined to better understand their structure.
+
+```{r}
+traindata <- read.csv("pml-training.csv")
+testdata <- read.csv("pml-testing.csv")
+str(testdata[,1:20])
+head(testdata[,1:20],20)
+```
+
+### Variable Selection
+
+We immediately see that many variables in the testdata dataset are comprised completely of NA's. This indicates that any of these same variables in the traindata dataset will have no predictive power in determing outcomes in the testdata dataset. Given this situation, our first step in variable selection is to eliminate any variables in the traindata and testdata datsets that have all NA's in the testdata dataset.   
+
+```{r}
+isna <- sapply(testdata, function(x)all(is.na(x)))
+index <- which(isna == 0)
+test <- testdata[,index]
+train <- traindata[,index]
+dim(test)
+dim(train)
+```
+
+Eliminating variables with all NA's for observations in the test dataset has reduced the number of included variables to 60 from 160. The next stage of variable selection is to examine the 60 variables included in the train dataset to see their composition.
+
+```{r}
+str(test[,1:60])
+str(train[,1:60])
+```
+
+In the test datset we see that the variable "X" is merely a row indicator and that "new_window" is a factor variable with only one level 'no'. Both variables have no predictive power and should be removed from both the train and test datasets. Before removing the variable "new_window" from the train dataset, we first remove all rows where "new_window" is not equal to 'no' since these observations are not relevant. In addition, we need to remove timestamp variables and "user_name" since these observations are not relevant to the prediction modeling either.
+
+```{r}
+test <- test[,!names(test) %in% c("X","new_window", "user_name", "raw_timestamp_part_1", "raw_timestamp_part_2", "cvtd_timestamp")]
+train <- train[train$new_window == 'no',]
+train <- train[,!names(train) %in% c("X","new_window", "user_name", "raw_timestamp_part_1", "raw_timestamp_part_2", "cvtd_timestamp")]
+```
+
+As a final check, we examine the chosen variables to ensure that they are not highly correlated with each other. All factor variables and time stamp data need to be removed before calculating correlation coefficients.
+
+```{r}
+descrCor <-  cor(train[,!names(train) %in% c("classe")])
+highCorr <- sum(abs(descrCor[upper.tri(descrCor)]) > .999)
+highCorr
+```
+
+We also want to ensure that no variables have near zero variance.
+
+```{r}
+nzv <- nearZeroVar(train)
+dim(nzv)
+```
+
+Next we plot the chosen variables.
+
+```{r,fig.width=10, fig.height=8}
+train_narrow <- melt(train, id.vars= "classe", variable.name= "Measurement")
+ggplot(train_narrow, aes(x=classe, y=value)) +
+geom_violin(aes(color=classe, fill=classe), alpha=1/2) +
+facet_wrap(~ Measurement, scale="free_y")
+```
+
+It is obvious frm the varying magnitudes of these included variables that they will need to be standardized (centered and scaled) in order to properly model them. First we need to split them into train and cross-validaton datasets.
+
+### Split Train Dataset into Train and Cross-Validation Sub-datasets
+
+Now that we have the variables chosen, the next step is to break out the train dataset into training and cross-validaton sub-datasets. By using "createDataPartition" from the Caret package we can stratify the two datasets such that they each contain an equal number of levels of the target factor variable "classe".
+
+```{r}
+set.seed(123)
+inTrain <- createDataPartition(train$classe, p=.60, list=FALSE)
+classeTrain <- train[inTrain,]
+classeCv <- train[-inTrain,]
+dim(classeTrain)
+dim(classeCv)
+```
+
+### Model Preprocessing
+
+We now set the model preprocessing requirements that will be used in the model development. First we need to center and scale the data to eliminate any influence from variables with larger magnitudes.The classeTrain dataset is centered and scaled and then the classeCv dataset is centered and scaled with the same transformations.
+
+```{r}
+preProc <- preProcess(classeTrain[,!names(classeTrain) %in% c("classe")], method= c("center", "scale"))
+classeTrainMod <- predict(preProc, classeTrain)
+classeCvMod <- predict(preProc, classeCv)
+```
+
+Next we set up the control parameter for the model estimation. We use the trainControl function to specify the type of resampling. In this case we are using  three separate 10-fold cross-validations as the resampling scheme. Additionally, we are enabling parallel processing, the calculation of class probabilities and saving any predictions.
+
+```{r}
+cntrl <- trainControl(method="repeatedcv", number=10, repeats=3, allowParallel = TRUE, classProbs=TRUE, savePredictions=TRUE)
+```
+
+### Parallel Processing
+
+Paarallel processing is used in order to speed up processing since we are evaluating 3 models with 10-fold cross-validation repeated 3 times.
+
+```{r}
+cl <- makeCluster(detectCores() - 1)
+registerDoParallel(cl)
+```
+
+### Model Tuning and Execution
+
+```{r,message=FALSE,warning=FALSE}
+set.seed(123)
+model_rf <- train(classe~., data= classeTrainMod, method= "rf", trControl= cntrl)
+set.seed(123)
+model_gbm <- train(classe~., data= classeTrainMod, method= "gbm", trControl= cntrl, verbose= FALSE)
+set.seed(123)
+model_svm <- train(classe~., data= classeTrainMod, method= "svmRadial", trControl= cntrl)
+```
+
+After model execution we need to stop the clusters from parallel processing.
+
+```{r}
+stopCluster(cl)
+```
+
+### Model Evaluation and Comparison
+
+First evaluate on train sub-dataset.
+```{r}
+pred_rf <- predict(model_rf, classeTrainMod)
+cm_tr1 <- confusionMatrix(pred_rf, classeTrain[, "classe"])
+cm_tr1
+
+pred_gbm <- predict(model_gbm, classeTrainMod)
+cm_tr2 <- confusionMatrix(pred_gbm, classeTrain[, "classe"])
+cm_tr2
+
+pred_svm <- predict(model_svm, classeTrainMod)
+cm_tr3 <- confusionMatrix(pred_svm, classeTrain[, "classe"])
+cm_tr3
+```
+
+NeXt evaluate on cross-validation sub-dataset.
+```{r}
+pred_rf <- predict(model_rf, classeCvMod)
+cm_cv1 <- confusionMatrix(pred_rf, classeCv[, "classe"])
+cm_cv1
+
+pred_gbm <- predict(model_gbm, classeCvMod)
+cm_cv2 <- confusionMatrix(pred_gbm, classeCv[, "classe"])
+cm_cv2
+
+pred_svm <- predict(model_svm, classeCvMod)
+cm_cv3 <- confusionMatrix(pred_svm, classeCv[, "classe"])
+cm_cv3
+```
+
+### Final Model
+
+THe superior model was the Random Forest ("rf") model with a training accuracy of 1, a sensitivity level of 1 and a specificity level of 1. The cross-validation dataset accuracy was very close at 0.9973, a sensitivity level between 0.9955 and 0.9991 for all classes, and a specificity level between 0.9989 and 0.9998 for all classes.
+
+```{r}
+varImp(model_rf)
+model_rf$finalModel
+save(model_rf, file="HAR_WLE_model_rf.RData")
+```
+
+Below is a heatmap of the final model.
+
+#### Confusion Matrix
+```{r}
+x <- cm_cv1$table
+par(oma=c(4,2,4,2))
+heatmap.2( x, Rowv=FALSE, Colv=FALSE, dendrogram='none', cellnote=x, notecol="black", trace='none', key=FALSE,lwid = c(.01,.99), lhei = c(.01,.99), margins = c(5,5), xlab= "Reference", ylab= "Prediction")
+```
+
+The OOB estimate of error rate is only 0.26%.
+
+### Model Prediction on Test Dataset
+
+In order to get the correct results, we need to preprocess the data in the test dataset using the same parameters that were used to center and scale the training dataset. The we can run the model to compute the predictions for the test dataset.
+
+```{r}
+testMod <- predict(preProc, test)
+pred_rf_test <- predict(model_rf, testMod)
+pred_rf_test
+```
+
+The various outcomes are: 
+
+*Class A* - performing the exercise exactly according to the specication;  
+*Class B* - throwing the elbows to the front;  
+*Class C* - lifting the dumbbell only halfway;  
+*Class D* - lowering the dumbbell only halfway;  
+*Class E* - throwing the hips to the front.  
+
+*Class A*  corresponds  to  the  specified  execution  of  the  exercise,
+while  the  other  4  classes  correspond  to  common  mistakes.
+
+
+
+
+
+
+
+
+
+
+
+
